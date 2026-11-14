@@ -23,10 +23,10 @@ fs.writeFileSync(path.join(ws, "tsconfig.json"), JSON.stringify({
 }, null, 2));
 
 const original = Object.fromEntries(fs.readdirSync(ws).filter(f => f.endsWith(".rx")).map(f => [f, fs.readFileSync(path.join(ws, f), "utf8")]));
-function run(edit) {
+function run(edit, extraArgs = []) {
   for (const [f, t] of Object.entries(original)) fs.writeFileSync(path.join(ws, f), t);
   if (edit) fs.writeFileSync(path.join(ws, edit.file), edit.text(original[edit.file]));
-  const r = spawnSync(process.execPath, [path.join(__dirname, "../bin/tsc.js")], { cwd: ws, encoding: "utf8" });
+  const r = spawnSync(process.execPath, [path.join(__dirname, "../bin/tsc.js"), ...extraArgs], { cwd: ws, encoding: "utf8" });
   return { status: r.status, out: r.stdout + r.stderr };
 }
 
@@ -47,7 +47,13 @@ const parse = run({ file: "catalog.rx", text: t => t + "\nexport fn broken( {\n"
 check("a parse error fails (no projection, so TypeScript alone would pass it)", parse.status !== 0 && /catalog\.rx:\d+:\d+ - error PARSE/.test(parse.out), parse);
 
 const write = run({ file: "main.rx", text: t => t + "\naction wipe() { products := [] }\n" });
-check("a checker error fails, with its rule", write.status !== 0 && /main\.rx:\d+:\d+ - error WRITE_TO_NON_SOURCE: .*\(MO-2\)/.test(write.out), write);
+check("a checker error fails, with its rule (compact when piped)", write.status !== 0 && /main\.rx:\d+:\d+ - error WRITE_TO_NON_SOURCE: .*\(MO-2\)/.test(write.out), write);
+
+const writePretty = run({ file: "main.rx", text: t => t + "\naction wipe() { products := [] }\n" }, ["--pretty"]);
+check("a checker error with --pretty prints the crate's formatted block and = help:", writePretty.status !== 0 && /error\[WRITE_TO_NON_SOURCE\] \(MO-2\)/.test(writePretty.out) && /= help:/.test(writePretty.out), writePretty);
+
+const writePrettyFalse = run({ file: "main.rx", text: t => t + "\naction wipe() { products := [] }\n" }, ["--pretty=false"]);
+check("--pretty=false normalizes for tsc and prints 1-line compact output", writePrettyFalse.status !== 0 && !/TS5023/.test(writePrettyFalse.out) && /main\.rx:\d+:\d+ - error WRITE_TO_NON_SOURCE:/.test(writePrettyFalse.out), writePrettyFalse);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

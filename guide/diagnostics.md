@@ -1,6 +1,9 @@
 # .rx diagnostics: every code and its fix
 
-`rxc check` and the editor report a diagnostic as `file:line:column: error CODE [rule] message`. The message already
+`rxc check` and `rx-tsc` print a source-annotated block (`error[CODE] (rule): head`, `--> file:line:col`, source line,
+`^^^` carets, and `= help:` bullets) on an interactive terminal or under `--pretty` / `RX_PRETTY=1` (as Vite also does),
+and a single compact line (`file:line:column: error CODE [rule] message`) when piped to a non-TTY caller such as an
+agent or CI, or under `--compact` / `RX_COMPACT=1` (`--json` adds `head` and `help`). The message already
 says what to do. This page says why, with a program that gets the code and the same program fixed, one section per
 code. Codes keep Solid 2.0's names where Solid has the same check at run time (`REACTIVE_WRITE_IN_OWNED_SCOPE`,
 `ASYNC_STORE_SETTER`, …), so a compile error here and a dev-mode warning from Solid mean the same thing.

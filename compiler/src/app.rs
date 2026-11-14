@@ -35,13 +35,13 @@ pub fn app(entry: &str, target: Target, module_name: &str, spa: bool) -> Value {
         let set = load_modules(entry, &read_disk).map_err(|e| {
             // a parse error is a diagnostic like the checker's, with its code (PARSE, or the habit it names)
             let file = e.2.clone().unwrap_or_else(|| entry.to_string());
-            let mut d = crate::serve::parse_error_in(&file, &e, read_disk(&file).as_deref());
+            let mut d = crate::serve::parse_error_in_rendered(&file, &e, read_disk(&file).as_deref());
             d["msg"] = json!(crate::serve::parse_message(&e));
             json!({ "diagnostics": [d] })
         })?;
         let checked = check_modules(&set, spa);
         if !checked.diags.is_empty() {
-            return Err(json!({ "diagnostics": checked.diags.iter().map(|d| { let mut j = d.to_json(); if j["file"].is_null() { j["file"] = json!(set.entry); } j }).collect::<Vec<_>>() }));
+            return Err(json!({ "diagnostics": checked.diags.iter().map(|d| { let mut j = crate::serve::diagnostic_json_rendered(&set, d); j["msg"] = json!(d.msg); j }).collect::<Vec<_>>() }));
         }
         let out = compile_linked(&set, &[], true).map_err(|e| json!({ "error": format!("{entry}: not compiled: {}", e.0) }))?;
         let mut modules = Map::new();

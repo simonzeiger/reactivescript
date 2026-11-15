@@ -55,7 +55,10 @@ export default component Counter() {
 Write to the equation instead, `double := 4`, and the checker refuses it:
 
 ```
-counter.rx:5: error WRITE_TO_NON_SOURCE [W-1] double is an equation: only sources are written
+error[WRITE_TO_NON_SOURCE] (W-1): double is an equation: only sources are written
+  --> counter.rx:5:3
+ 5 |   <button onClick={() => { double := 4 }}>{count} × 2 = {double}</button>
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
 Async is an `await` in an equation. The compiler tracks that the value can be
@@ -82,7 +85,13 @@ export default component Profile() {
 Leave out the `errored` boundary and it does not compile:
 
 ```
-profile.rx:10: error UNHANDLED_FAILURE [R-f-5] a reader of user.name (in <Profile>) can fail with Error and no catch or errored boundary above it discharges Error — wrap it in `errored fallback(e) { … } { … }`, or catch it: `… catch (e) => …`
+error[UNHANDLED_FAILURE] (R-f-5): a reader of user.name (in <Profile>) can fail with Error and
+    no catch or errored boundary above it discharges Error
+  --> profile.rx:10:7
+10 |       <h1>{user.name}</h1>
+   |       ^^^^^^^^^^^^^^^^^^^^
+   = help: • wrap it in `errored fallback(e) { … } { … }`
+           • or catch it: `… catch (e) => …`
 ```
 
 Beyond this the language has structured stores with per-path writes

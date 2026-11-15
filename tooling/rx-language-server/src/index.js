@@ -4,7 +4,18 @@
 const { analyze, preludeFor } = require("./rxc");
 
 /** The page that explains a diagnostic code and its fix (the compiler's guide/diagnostics.md, one section a code). */
-const guideUrl = code => `https://github.com/solidjs/reactivescript/blob/main/guide/diagnostics.md#${String(code).toLowerCase()}`;
+const guideUrl = code => `${process.env.RX_GUIDE_BASE || "https://github.com/solidjs/reactivescript/blob/main/guide/diagnostics.md"}#${String(code).toLowerCase()}`;
+
+function formatLspMessage(d) {
+  const rawHead = d.head ?? d.message;
+  const suffix = ` (${d.rule})`;
+  const head = d.rule && !rawHead.endsWith(suffix) ? `${rawHead}${suffix}` : rawHead;
+  const lines = [head];
+  if (d.help?.length === 1) lines.push(`help: ${d.help[0]}`);
+  else if (d.help?.length > 1) lines.push(`help:\n${d.help.map(h => `  • ${h}`).join("\n")}`);
+  for (const n of d.notes ?? []) lines.push(`note: ${n}`);
+  return lines.join("\n");
+}
 
 /** Every feature, where the projection copies the `.rx`'s text (a name, a member, a literal, a type, a tag). */
 const EXACT = { verification: true, completion: true, semantic: true, navigation: true, structure: true, format: false };
@@ -91,7 +102,7 @@ function rxDiagnostics() {
             source: "rx",
             code: d.code,
             codeDescription: { href: guideUrl(d.code) },
-            message: `${d.message} (${d.rule})`,
+            message: formatLspMessage(d),
           }));
         },
       };
@@ -102,4 +113,4 @@ function rxDiagnostics() {
 /** Every `.rx` module analyzed so far, with its last analysis (the command line reports their crate diagnostics). */
 const analyses = () => [...cache].filter(([f]) => isModule(f)).map(([file, { result }]) => ({ file, result }));
 
-module.exports = { rxLanguagePlugin, rxDiagnostics, analysis, analyses, guideUrl };
+module.exports = { rxLanguagePlugin, rxDiagnostics, analysis, analyses, guideUrl, formatLspMessage };

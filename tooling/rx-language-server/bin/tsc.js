@@ -10,6 +10,18 @@ const path = require("node:path");
 const { runTsc } = require("@volar/typescript/lib/quickstart/runTsc");
 const { rxLanguagePlugin, analyses, guideUrl } = require("../src/index.js");
 
+const rawArgs = process.argv.slice(2);
+for (let i = process.argv.length - 1; i >= 2; i--) {
+  if (process.argv[i] === "--compact") process.argv.splice(i, 1);
+  else if (process.argv[i] === "--pretty=false") process.argv.splice(i, 1, "--pretty", "false");
+  else if (process.argv[i] === "--pretty=true") process.argv.splice(i, 1, "--pretty", "true");
+}
+const args = process.argv.slice(2);
+const pIdx = args.indexOf("--pretty");
+const prettyFalse = pIdx >= 0 && args[pIdx + 1] === "false";
+const pretty = !rawArgs.includes("--compact") && process.env.RX_COMPACT !== "1" && !prettyFalse && process.env.TERM !== "dumb"
+  && (pIdx >= 0 || process.env.RX_PRETTY === "1" || !!process.stdout.isTTY);
+
 const tsc = require.resolve("typescript/lib/tsc");
 
 process.on("exit", code => {
@@ -17,17 +29,27 @@ process.on("exit", code => {
   if (watching) return;
   let errors = 0;
   const codes = new Set();
+  const blocks = [];
   for (const { file, result } of analyses()) {
     for (const d of result.diagnostics ?? []) {
       errors++;
       codes.add(d.code);
-      const where = d.range ? `${d.range.start.line}:${d.range.start.column + 1}` : "1:1";
-      process.stdout.write(`${path.relative(process.cwd(), file)}:${where} - error ${d.code}: ${d.message} (${d.rule})\n`);
+      const diagFile = d.file || file;
+      const rel = path.relative(process.cwd(), diagFile) || diagFile;
+      if (pretty && d.rendered) {
+        blocks.push(d.rendered.replace(`--> ${d.file}:`, () => `--> ${rel}:`));
+      } else {
+        const where = d.range ? `${d.range.start.line}:${d.range.start.column + 1}` : "1:1";
+        blocks.push(`${rel}:${where} - error ${d.code}: ${d.message} (${d.rule})`);
+      }
     }
   }
   if (errors) {
-    process.stdout.write(`\nFound ${errors} ReactiveScript error${errors === 1 ? "" : "s"}.\n`);
-    for (const c of codes) process.stdout.write(`${c}: why, and the fix — ${guideUrl(c)}\n`);
+    process.stdout.write(blocks.join(pretty ? "\n\n" : "\n") + "\n");
+    if (pretty && process.env.RX_DOCS !== "0") {
+      process.stdout.write(`\nFound ${errors} ReactiveScript error${errors === 1 ? "" : "s"}.\n`);
+      for (const c of codes) process.stdout.write(`docs[${c}]: ${guideUrl(c)}\n`);
+    }
     if (!code) process.exitCode = 1;
   }
 });

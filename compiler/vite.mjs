@@ -23,13 +23,27 @@ const DEP = "rx-dep";
 // the page each code points to: the package's copy (scripts/guide.mjs), else the repository's
 const GUIDE = [path.join(path.dirname(fileURLToPath(import.meta.url)), "guide/diagnostics.md"), path.join(path.dirname(fileURLToPath(import.meta.url)), "../guide/diagnostics.md")].find(existsSync)
   ?? "https://github.com/solidjs/reactivescript/blob/main/guide/diagnostics.md";
+const rel = f => (f ? path.relative(process.cwd(), f) || f : "main.rx");
 const at = d => d.range ? `${d.range.start.line}:${d.range.start.column + 1}` : `${d.line}`;
-/** The diagnostics as `rxc check` prints them, then, once per code, where its fix is explained. */
-const report = ds => [
-  ...ds.map(d => `${d.file}:${at(d)}: error ${d.code} [${d.rule}] ${d.msg}`),
-  "",
-  ...[...new Set(ds.map(d => d.code))].map(c => `${c}: why, and the fix — ${GUIDE}#${c.toLowerCase()}`),
-].join("\n");
+const renderOne = d => d.rendered ? d.rendered.replace(`--> ${d.file}:`, () => `--> ${rel(d.file)}:`) : `${rel(d.file)}:${at(d)}: error ${d.code} [${d.rule}] ${d.msg}`;
+/** The diagnostics as `rxc check --pretty` prints them (or one line each with RX_COMPACT=1), plus guide links. */
+function report(ds) {
+  if (process.env.RX_COMPACT === "1") return ds.map(d => `${rel(d.file)}:${at(d)}: error ${d.code} [${d.rule}] ${d.msg}`).join("\n");
+  const body = ds.map(renderOne).join("\n\n");
+  if (process.env.RX_DOCS === "0") return body;
+  const base = process.env.RX_GUIDE_BASE || GUIDE;
+  return `${body}\n\n${[...new Set(ds.map(d => d.code))].map(c => `docs[${c}]: ${base}#${c.toLowerCase()}`).join("\n")}`;
+}
+function diagnosticError(ds) {
+  const err = new Error(report(ds));
+  const first = ds[0];
+  if (first?.file) {
+    err.id = first.file;
+    err.loc = { file: first.file, line: first.range?.start?.line ?? first.line ?? 1, column: first.range?.start?.column ?? 0 };
+    if (process.env.RX_COMPACT !== "1") err.frame = "";
+  }
+  return err;
+}
 const mtime = file => { try { return statSync(file).mtimeMs; } catch { return -1; } };
 const isDep = moduleId => new URLSearchParams(moduleId.split("?")[1] ?? "").has(DEP);
 // `import __m0 from "./catalog.rx";` → `"./catalog.rx?rx-dep"` (one line each: the module's map is by line, CP-1c)
@@ -66,7 +80,7 @@ export default function rx() {
       const spa = target === "dom" && solid.hydratable === false;
       const dep = isDep(moduleId);
       const { entry, out } = dep ? containing(file, target, moduleName, spa) : build(file, target, moduleName, spa);
-      if (out.diagnostics) throw new Error(report(out.diagnostics));
+      if (out.diagnostics) throw diagnosticError(out.diagnostics);
       if (out.error) throw new Error(out.error);
       const m = out.modules[file];
       for (const p of Object.keys(out.modules)) if (p !== file) addWatchFile(p);

@@ -1,8 +1,8 @@
 //! `rxc`: the crate's command line.
 //!
-//!   rxc check file.rx...   diagnostics, as `ref/check.ts` prints them (`--spa`: see below)
+//!   rxc check file.rx...   diagnostics: rustc-style blocks on a TTY (`--pretty`), 1 line per error when piped (`--compact`, `--no-color`, `--spa`)
 //!   rxc check --json file.rx...
-//!                          the same as `{diagnostics: [{file, line, range, code, rule, message}]}`, ranges per CP-8
+//!                          the same as `{diagnostics: [{file, line, range, code, rule, message, head, help, notes}]}`, ranges per CP-8
 //!   rxc project app.rx     TY-1c: the program's TSX projection, each file with its mappings onto the `.rx`
 //!                          (`[generated offset, source offset, length]`, CP-8), and the prelude it imports; with no
 //!                          file, reads `[{id, entry, files}]` on stdin, as `conform` does (`ref/crate.ts --project`)
@@ -29,6 +29,7 @@
 use reactivescript::app::{self, read_disk};
 use reactivescript::check::check_modules;
 use reactivescript::emit::{compile_modules, lower_view, Target};
+use reactivescript::format;
 use reactivescript::parse::parse_stmts;
 use reactivescript::project::{project_modules, unverified, PRELUDE};
 use reactivescript::modules::load_modules;
@@ -36,7 +37,7 @@ use reactivescript::serve;
 use reactivescript::signature::print_signature;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{IsTerminal, Read};
 use std::path::Path;
 
 
@@ -153,17 +154,53 @@ fn lower_one(r: &Value) -> Value {
     v
 }
 
-/// A parse error as `rxc check` prints a diagnostic: `file:line:column: error CODE [rule] message`, the message without the
-/// `file: line n:` it carries.
-fn parse_error_text(f: &str, e: &reactivescript::parse::ParseError) -> String {
-    let v = parse_error_json(f, e);
-    let msg = serve::parse_message(e);
-    let at = match (v["range"]["start"]["line"].as_i64(), v["range"]["start"]["column"].as_i64()) {
-        (Some(l), Some(c)) => format!("{}:{}", l, c + 1),
-        _ => "1".into(),
-    };
-    format!("{}:{}: error {} [{}] {}", v["file"].as_str().unwrap_or(f), at, e.3, v["rule"].as_str().unwrap_or("07"), msg)
+fn rel_path(p: &str) -> String {
+    let cwd = std::env::current_dir().map(|d| d.to_string_lossy().replace('\\', "/") + "/").unwrap_or_default();
+    if !cwd.is_empty() && p.starts_with(&cwd) { p[cwd.len()..].to_string() } else { p.to_string() }
 }
+
+fn should_pretty_stderr(args: &[String]) -> bool {
+    if args.iter().any(|a| a == "--compact") || std::env::var("RX_COMPACT").is_ok_and(|v| v == "1") {
+        return false;
+    }
+    if args.iter().any(|a| a == "--pretty") || std::env::var("RX_PRETTY").is_ok_and(|v| v == "1") {
+        return true;
+    }
+    if std::env::var("TERM").is_ok_and(|t| t == "dumb") {
+        return false;
+    }
+    std::io::stderr().is_terminal()
+}
+
+fn should_color_stderr(no_color: bool, compact: bool) -> bool {
+    if no_color || compact {
+        return false;
+    }
+    if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+        return false;
+    }
+    if let Ok(fc) = std::env::var("FORCE_COLOR") {
+        if !fc.is_empty() {
+            return fc != "0" && !fc.eq_ignore_ascii_case("false");
+        }
+    }
+    if std::env::var("TERM").is_ok_and(|t| t == "dumb") {
+        return false;
+    }
+    std::io::stderr().is_terminal()
+}
+
+fn parse_error_text(f: &str, e: &reactivescript::parse::ParseError, compact: bool, color: bool) -> String {
+    let file = e.2.clone().unwrap_or_else(|| abs(f));
+    let src = read_disk(&file);
+    serve::format_parse_error(&rel_path(&file), e, src.as_deref(), compact, color)
+}
+
+fn checker_diag_text(set: &reactivescript::modules::ModuleSet, d: &reactivescript::check::Diagnostic, fallback: &str, compact: bool, color: bool) -> String {
+    let disp = rel_path(d.file.as_deref().unwrap_or(fallback));
+    serve::format_checker_diagnostic(set, d, &disp, compact, color)
+}
+
 /// A parse error as `diagnostic_json` writes a diagnostic: from where the parser stopped to the end of that line.
 fn parse_error_json(f: &str, e: &reactivescript::parse::ParseError) -> Value {
     let file = e.2.clone().unwrap_or_else(|| abs(f));
@@ -174,6 +211,8 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // 08 CN-3d: a client-only build (dom, not hydratable)
     let spa = args.iter().any(|a| a == "--spa");
+    let compact = !should_pretty_stderr(&args);
+    let color = should_color_stderr(args.iter().any(|a| a == "--no-color"), compact);
     let Some(cmd) = args.first() else {
         eprintln!("usage: rxc check|model file.rx... | rxc conform < request.json");
         std::process::exit(2);
@@ -275,15 +314,27 @@ fn main() {
             let set = match load_modules(&abs(file), &read_disk) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("{}", parse_error_text(file, &e));
+                    eprintln!("{}", parse_error_text(file, &e, compact, color));
+                    if !compact {
+                        let footer = format::format_docs_footer(&[e.3.to_string()], color);
+                        if !footer.is_empty() {
+                            eprintln!("\n{footer}");
+                        }
+                    }
                     std::process::exit(1);
                 }
             };
             let checked = check_modules(&set, spa);
-            for d in &checked.diags {
-                eprintln!("{}:{}: error {} [{}] {}", d.file.as_deref().unwrap_or(file), d.line, d.code, d.rule, d.msg);
-            }
             if !checked.diags.is_empty() {
+                let blocks: Vec<String> = checked.diags.iter().map(|d| checker_diag_text(&set, d, file, compact, color)).collect();
+                eprintln!("{}", blocks.join(if compact { "\n" } else { "\n\n" }));
+                if !compact {
+                    let codes: Vec<String> = checked.diags.iter().map(|d| d.code.clone()).collect();
+                    let footer = format::format_docs_footer(&codes, color);
+                    if !footer.is_empty() {
+                        eprintln!("\n{footer}");
+                    }
+                }
                 std::process::exit(1);
             }
             let out = compile_modules(&set, &[]).unwrap_or_else(|e| {
@@ -321,6 +372,8 @@ fn main() {
             let mut bad = 0;
             let as_json = cmd == "check" && args.iter().any(|a| a == "--json");
             let mut found: Vec<Value> = vec![];
+            let mut rendered: Vec<String> = vec![];
+            let mut codes: Vec<String> = vec![];
             for f in args[1..].iter().filter(|a| !a.starts_with("--")) {
                 let set = match load_modules(&abs(f), &read_disk) {
                     Ok(s) => s,
@@ -329,7 +382,8 @@ fn main() {
                         if as_json {
                             found.push(parse_error_json(f, &e));
                         } else {
-                            eprintln!("{}", parse_error_text(f, &e));
+                            codes.push(e.3.to_string());
+                            rendered.push(parse_error_text(f, &e, compact, color));
                         }
                         continue;
                     }
@@ -340,7 +394,8 @@ fn main() {
                     if as_json {
                         found.push(serve::diagnostic_json(&set, d));
                     } else {
-                        eprintln!("{}:{}: error {} [{}] {}", d.file.as_deref().unwrap_or(f), d.line, d.code, d.rule, d.msg);
+                        codes.push(d.code.clone());
+                        rendered.push(checker_diag_text(&set, d, f, compact, color));
                     }
                 }
                 if cmd == "model" {
@@ -357,6 +412,15 @@ fn main() {
                     println!("{}", serde_json::to_string_pretty(&ms).unwrap());
                 } else if checked.diags.is_empty() && !as_json {
                     println!("{}: ok", f);
+                }
+            }
+            if !rendered.is_empty() {
+                eprintln!("{}", rendered.join(if compact { "\n" } else { "\n\n" }));
+                if !compact && cmd == "check" {
+                    let footer = format::format_docs_footer(&codes, color);
+                    if !footer.is_empty() {
+                        eprintln!("\n{footer}");
+                    }
                 }
             }
             if as_json {
